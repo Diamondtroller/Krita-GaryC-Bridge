@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=Krita/PythonPlugin
+X-KDE-Library=krita_garyc_bridge
+X-Python-2-Compatible=false
+X-Krita-Manual=Manual.html
+Name=Krita GaryC Bridge
+Comment=A Krita plugin to make https://garyc.me/sketch drawings.

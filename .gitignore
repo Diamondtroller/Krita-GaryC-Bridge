@@ -1,0 +1,5 @@
+# Don't commit cache
+__pycache__
+
+# Autocomplete file
+PyKrita.py
