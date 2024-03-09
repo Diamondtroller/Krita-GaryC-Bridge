@@ -184,7 +184,7 @@ def compile_path(attributes):
                         pen[1] += factor * args[2 * i + 1]
 
                     subline.append(pen)
-                pen = args
+                pen = args[-2:]
             elif command == "M":
                 if len(subline) != 0:
                     line.append(subline)
