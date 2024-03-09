@@ -1,7 +1,6 @@
 import re
 import xml.etree.ElementTree as ET
-from functools import cache
-from math import atan2, degrees, dist
+from math import atan2, cos, degrees, dist, pi, sin
 from urllib.request import Request, urlopen
 
 try:
@@ -19,7 +18,7 @@ from PyQt5.QtWidgets import (
 )
 
 NAME = "Krita GaryC Bridge"
-VERSION = "0.1.4"
+VERSION = "0.1.5"
 
 
 def generate_base36():
@@ -66,10 +65,10 @@ def show_message(message):
 APP = krita.Krita.instance()
 
 
-def create_document():
-    """Creates document according to format this plugin expects."""
+def start_sketch():
+    """Creates a document file  according to format this plugin expects."""
 
-    document = APP.createDocument(800, 600, "sketch", "GRAYA", "U8", "", 72.0)
+    document = APP.createDocument(800, 600, "sketch", "RGBA", "U8", "", 72.0)
     document.setBackgroundColor(QColor("#FFFFFF"))
     APP.activeWindow().addView(document)  # make active, for setActiveNode to work
     root = document.rootNode()
@@ -78,6 +77,17 @@ def create_document():
     canvas = document.createVectorLayer("canvas")  # new layer
     root.addChildNode(canvas, None)
     return document
+
+
+def load_tool_options():
+    """Loads the correct tool settings to make the sketches look like sketches."""
+    view = APP.activeWindow().activeView()
+    view.setBrushSize(3)
+    view.setForeGroundColor(
+        krita.ManagedColor.fromQColor(QColor("#000000"), view.canvas())
+    )
+    for action in ["KisToolPencil", "view_snap_to_pixel"]:
+        APP.action(action).trigger()
 
 
 def get_document():
@@ -96,7 +106,6 @@ SPLITTER_P = re.compile(r"[a-z\d]{4}")
 FILTER_P = re.compile(r"[^a-z\d ]")
 
 
-@cache
 def data_to_svg(data):
     svg = "<svg>"
     for base36_line in data.split():
@@ -107,7 +116,7 @@ def data_to_svg(data):
         stroke="#000000"
         stroke-width="3"
         stroke-linejoin="round"
-        d="M{"L".join(pairs)}" />"""
+        d="M{"L".join(pairs)}"/>"""
     svg += "</svg>"
     return svg
 
@@ -131,135 +140,204 @@ def data_to_layer(data):
 
 
 FLOAT_P = re.compile(r"[-+]?\d+\.?\d*(?:e[-+]?\d+)?")
-COMMAND_ARGC_P = {"M": 2, "L": 2, "V": 1, "H": 1, "Z": 0}
+COMMAND_ARGC = {"C": 6, "M": 2, "L": 2, "V": 1, "H": 1, "Z": 0}
 COMMAND_ARGV_P = re.compile(
-    rf"({'|'.join(COMMAND_ARGC_P.keys())})|({FLOAT_P.pattern})", re.I | re.M
+    rf"({'|'.join(COMMAND_ARGC.keys())})|({FLOAT_P.pattern})", re.I | re.M
 )
 NAMESPACE_P = re.compile(r"{.+}(?P<tag>\w+)")
 
 
-@cache
+def compile_path(attributes):
+    pen = [0, 0]
+    line = []
+    subline = []
+    command = ""
+    previous_command = ""
+    args = []
+    # parses token, by token
+    for match in COMMAND_ARGV_P.findall(attributes["d"]):
+        if command == "":
+            command = match[0]
+        else:
+            args.append(float(match[1]))
+
+        if COMMAND_ARGC[command.upper()] == len(args) and command != "":
+            if command.islower():
+                for i, _ in enumerate(args):
+                    args[i] += pen[i % 2]
+                command = command.upper()
+
+            if previous_command == "M" and command != "M":
+                subline.append(pen)
+
+            if command == "C":
+                quotients = [1, 3, 3, 1]
+
+                args = pen + args
+                for time in range(1001):
+                    t = time / 1000
+                    at = 1 - t
+                    pen = [0, 0]
+                    for i in range(4):
+                        factor = quotients[i] * at ** (3 - i) * t**i
+                        pen[0] += factor * args[2 * i]
+                        pen[1] += factor * args[2 * i + 1]
+
+                    subline.append(pen)
+                pen = args
+            elif command == "M":
+                if len(subline) != 0:
+                    line.append(subline)
+                    subline = []
+                pen = args
+            elif command == "L":
+                pen = args
+                subline.append(pen)
+            elif command == "H":
+                pen[0] = args[0]
+                subline.append(pen)
+            elif command == "V":
+                pen[1] = args[1]
+                subline.append(pen)
+            elif command == "Z":
+                subline.append(subline[0])
+            # reset
+            previous_command = command
+            command = ""
+            args = []
+
+    if len(subline) >= 2:
+        line.append(subline)
+    return line
+
+
+def compile_rect(attributes):
+    width = float(attributes["width"])
+    height = float(attributes["height"])
+    return [[[0, 0], [width, 0], [width, height], [0, height], [0, 0]]]
+
+
+def compile_ellipse(attributes):
+    center_x = float(attributes["cx"])
+    center_y = float(attributes["cy"])
+    if "r" in attributes:
+        radius_x = float(attributes["r"])
+        radius_y = radius_x
+    else:
+        radius_x = float(attributes["rx"])
+        radius_y = float(attributes["ry"])
+
+    steps = max(round(max(radius_x, radius_y) / 6 * pi), 6)
+    new_lines = [None] * (steps + 1)
+    for step in range(0, steps, 1):
+        rad = step / steps * 2 * pi
+        new_lines[step] = [
+            center_x - radius_x * cos(rad),
+            center_y + radius_y * sin(rad),
+        ]
+    new_lines[-1] = new_lines[0]  # connect ends
+    return [new_lines]
+
+
+MERGE_DISTANCE = 1
+
+
 def svg_to_data(svg):
     if len(svg) == 0:
         return svg
 
     lines = []
-    merge_distance = 1
+    # grid_refuse = 0.15
     vector_root = ET.fromstring(svg)
+
+    compile_map = {
+        "path": compile_path,
+        "rect": compile_rect,
+        "circle": compile_ellipse,
+        "ellipse": compile_ellipse,
+    }
+
     for obj in vector_root:
         tag = NAMESPACE_P.match(obj.tag).group("tag")
-        if tag == "path":
-            pen = [0, 0]
-            new_lines = []
-            line = []
-            command = ""
-            previous_command = ""
-            args = []
-            for match in COMMAND_ARGV_P.findall(obj.attrib["d"]):
-                if command == "":
-                    command = match[0]
-                else:
-                    args.append(float(match[1]))
-                if COMMAND_ARGC_P[command.upper()] == len(args) and command != "":
-                    if previous_command in ("M", "m") and command not in ("M", "m"):
-                        line.append(pen)
+        if tag in compile_map:
+            new_lines = compile_map[tag](obj.attrib)
+        else:
+            continue
 
-                    if command == "M":
-                        if len(line) != 0:
-                            new_lines.append(line)
-                            line = []
-                        pen = args
-                    elif command == "m":
-                        if len(line) != 0:
-                            new_lines.append(line)
-                            line = []
-                        pen = [pen[0] + args[0], pen[1] + args[1]]
+        if "transform" in obj.attrib:
+            transform = obj.attrib["transform"]
+            numbers = list(map(float, FLOAT_P.findall(transform)))
 
-                    elif command == "L":
-                        pen = args
-                        line.append(pen)
-                    elif command == "l":
-                        pen = [pen[0] + args[0], pen[1] + args[1]]
-                        line.append(pen)
-
-                    elif command == "H":
-                        pen[0] = args[0]
-                        line.append(pen)
-                    elif command == "h":
-                        pen[0] += args[0]
-                        line.append(pen)
-
-                    elif command == "V":
-                        pen[1] = args[1]
-                        line.append(pen)
-                    elif command == "v":
-                        pen[1] += args[1]
-                        line.append(pen)
-
-                    elif command in ("Z", "z"):
-                        line.append(line[0])
-                    else:
-                        pass
-                    # reset
-                    previous_command = command
-                    command = ""
-                    args = []
-            new_lines.append(line)
-
-            # in rare case of line start being at (0, 0) there's no transform attribute
-            if "transform" in obj.attrib:
-                transform = obj.attrib["transform"]
-                numbers = FLOAT_P.findall(transform)
-                numbers = list(map(float, numbers))
-
-                # krita does either translation or matrix
-                # no skews, rotations or others
-                if len(numbers) == 2:  # translation
-                    for i, line in enumerate(new_lines):
-                        for j, point in enumerate(line):
-                            line[j] = [point[0] + numbers[0], point[1] + numbers[1]]
-                        new_lines[i] = line
-                elif len(numbers) == 6:  # matrix
-                    for i, line in enumerate(new_lines):
-                        for j, point in enumerate(line):
-                            line[j] = [
+            # krita does either translation or matrix
+            # don't have to handle skews, rotations or others
+            if len(numbers) == 2:  # translation
+                for i, line in enumerate(new_lines):
+                    for j, point in enumerate(line):
+                        line[j] = [
+                            round(point[0] + numbers[0]),
+                            round(point[1] + numbers[1]),
+                        ]
+                    new_lines[i] = line
+            elif len(numbers) == 6:  # matrix
+                for i, line in enumerate(new_lines):
+                    for j, point in enumerate(line):
+                        line[j] = [
+                            round(
                                 numbers[0] * point[0]
                                 + numbers[2] * point[1]
-                                + numbers[4],
+                                + numbers[4]
+                            ),
+                            round(
                                 numbers[1] * point[0]
                                 + numbers[3] * point[1]
-                                + numbers[5],
-                            ]
-                        new_lines[i] = line
+                                + numbers[5]
+                            ),
+                        ]
+                    new_lines[i] = line
+        else:  # sometimes there's no transform
+            for i, line in enumerate(new_lines):
+                for j, point in enumerate(line):
+                    line[j] = [round(point[0]), round(point[1])]
+                new_lines[i] = line
 
-            # throw out of bounds, merge, round, flatten
-            for line in new_lines:
-                previous_point = []
-                flattened_line = []
-                for point in line:
-                    point = list(map(round, point))
-                    # out of bounds
-                    if point[0] > 800 or point[0] < 0 or point[1] > 600 or point[1] < 0:
-                        i += 1
-                        continue
-                    if not previous_point:
+        # throw out of bounds, merge, round, flatten
+        for line in new_lines:
+            previous_point = []
+            flattened_line = []
+            for point in line:
+                # point_err = [point[0] % 1, point[1] % 1]
+                # if (
+                #     point_err[0] > (0.5 - grid_refuse)
+                #     and point_err[0] < (0.5 + grid_refuse)
+                # ) or (
+                #     point_err[1] > (0.5 - grid_refuse)
+                #     and point_err[1] < (0.5 + grid_refuse)
+                # ):
+                #     continue
+
+                # point = list(map(round, point))
+                if not isinstance(point[0], int):
+                    break
+                # out of bounds
+                if point[0] > 800 or point[0] < 0 or point[1] > 600 or point[1] < 0:
+                    i += 1
+                    continue
+                if not previous_point:
+                    flattened_line += [
+                        ENCODER[point[0]],
+                        ENCODER[point[1]],
+                    ]
+                else:
+                    if (  # throw out unnecessary points
+                        abs(previous_point[0] - point[0]) >= MERGE_DISTANCE
+                        or abs(previous_point[1] - point[1]) >= MERGE_DISTANCE
+                    ):
                         flattened_line += [
                             ENCODER[point[0]],
                             ENCODER[point[1]],
                         ]
-                    else:
-                        if (  # skip if smaller than merge distance
-                            abs(previous_point[0] - point[0]) >= merge_distance
-                            or abs(previous_point[1] - point[1]) >= merge_distance
-                        ):
-                            flattened_line += [
-                                ENCODER[point[0]],
-                                ENCODER[point[1]],
-                            ]
-                    previous_point = point
-                lines.append("".join(flattened_line))
-        else:
-            continue
+                previous_point = point
+            lines.append("".join(flattened_line))
     return " ".join(lines)
 
 
@@ -276,14 +354,13 @@ def document_to_data():
         if layer.visible() and str(layer.type()) == "vectorlayer":
             data += svg_to_data(layer.toSvg())
 
-    if len(data) == 0:
+    if len(data) < 4:
         show_error("You don't have any vector layers or vector layers are empty!")
 
     return data
 
 
 # home-made shitty optimization
-@cache
 def optimize(data):
     new_data = []
     for base36_line in data.split():
@@ -326,18 +403,20 @@ def optimize(data):
     return " ".join(new_data)
 
 
-CLIPBOARD = krita.QtGui.QGuiApplication.clipboard()
+class Clipboard:
+    """Wrapper of Krita's clipboard"""
 
+    def __init__(self, source):
+        self.source = source
 
-def read_clipboard():
-    """Reads and returns text from clipboard as a string."""
-    return CLIPBOARD.text()
+    def read(self):
+        """Reads and returns text from clipboard as a string."""
+        return self.source.text()
 
-
-def write_clipboard(text):
-    """Writes text to clipboard."""
-    if len(text) != 0:
-        CLIPBOARD.setText(text)
+    def write(self, text):
+        """Writes text if it's not empty."""
+        if len(text) != 0:
+            self.source.setText(text)
 
 
 ESCAPED_NAME = NAME.replace(" ", "-")
@@ -393,12 +472,6 @@ def post_data(data):
     )
 
 
-# +-----------------------+
-# |Create sketch file     |create_document
-# |Import data as layer   |read_clipboard -> data_to_layer
-# |Copy document as data  |document_to_data -> write_clipboard
-# |Post to sketch         |document_to_data -> post_data
-# +-----------------------+
 class KritaGarycBridge(krita.DockWidget):  # pylint: disable=too-few-public-methods
     """Plugin's docker. Contains buttons so the user can use the plugin."""
 
@@ -406,6 +479,7 @@ class KritaGarycBridge(krita.DockWidget):  # pylint: disable=too-few-public-meth
         super().__init__()
         self.setWindowTitle(f"{NAME} v{VERSION}")
         layout = QVBoxLayout()
+        clipboard = Clipboard(krita.QtGui.QGuiApplication.clipboard())
 
         def make_button(icon, label, tooltip, method):
             button = QPushButton(APP.icon(icon), label)
@@ -416,27 +490,33 @@ class KritaGarycBridge(krita.DockWidget):  # pylint: disable=too-few-public-meth
         buttons = [
             [
                 "document-new",
-                "Create blank sketch file",
-                create_document.__doc__,
-                create_document,
+                "Create sketch file",
+                start_sketch.__doc__,
+                start_sketch,
             ],
             [
-                "document-import",
+                "draw-freehand",
+                "Load tool options",
+                load_tool_options.__doc__,
+                load_tool_options,
+            ],
+            [
+                "import-as-paintLayer",
                 "Import clipboard as layer",
                 "Import sketch data from clipboard into a new layer.",
-                lambda: data_to_layer(read_clipboard()),
+                lambda: data_to_layer(clipboard.read()),
             ],
             [
                 "document-export",
                 "Export document to clipboard",
                 "Export vector data from all layers to clipboard in sketch data format.",
-                lambda: write_clipboard(document_to_data()),
+                lambda: clipboard.write(document_to_data()),
             ],
             [
                 "reload-preset",
-                "Generate optimized layer",
-                "Runs ink optimizer on doucment and returns .",
-                lambda: write_clipboard(optimize(document_to_data())),
+                "Generate optimized document",
+                "Runs ink optimizer on document and save it into clipboard.",
+                lambda: clipboard.write(optimize(document_to_data())),
             ],
             [
                 "document-save",
