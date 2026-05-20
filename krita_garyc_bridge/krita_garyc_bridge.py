@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
 )
 
 NAME = "Krita GaryC Bridge"
-VERSION = "0.1.5"
+VERSION = "0.1.6"
 
 
 def generate_base36():
@@ -512,18 +512,18 @@ class KritaGarycBridge(krita.DockWidget):  # pylint: disable=too-few-public-meth
                 "Export vector data from all layers to clipboard in sketch data format.",
                 lambda: clipboard.write(document_to_data()),
             ],
-            [
-                "reload-preset",
-                "Generate optimized document",
-                "Runs ink optimizer on document and save it into clipboard.",
-                lambda: clipboard.write(optimize(document_to_data())),
-            ],
-            [
-                "document-save",
-                "Post to sketch",
-                "Post the document to https://garyc.me/sketch.",
-                lambda: post_data(document_to_data()),
-            ],
+            # [
+            #     "reload-preset",
+            #     "Generate optimized document",
+            #     "Runs ink optimizer on document and save it into clipboard.",
+            #     lambda: clipboard.write(optimize(document_to_data())),
+            # ],
+            # [
+            #     "document-save",
+            #     "Post to sketch",
+            #     "Post the document to https://garyc.me/sketch.",
+            #     lambda: post_data(document_to_data()),
+            # ],
         ]
 
         for button in buttons:
