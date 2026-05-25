@@ -1,5 +1,6 @@
 import re
 import xml.etree.ElementTree as ET
+from abc import ABC, abstractmethod
 from math import atan2, cos, degrees, dist, pi, sin
 from urllib.request import Request, urlopen
 
@@ -21,27 +22,27 @@ NAME = "Krita GaryC Bridge"
 VERSION = "0.1.6"
 
 
-def generate_base36():
-    """Hacky base 36 encoder/decoder generator, works only below 36**2"""
+class BaseNCodec:
 
-    def digit(digit):
-        if digit < 10:
-            return str(digit)
-        return chr(digit + 87)
+    def __init__(self, charset: str) -> None:
+        self.charset = charset
 
-    single_digits = [(i, digit(i)) for i in range(36)]
-    encoder = [None] * 36 * 36
-    decoder = {}
-    for i, first in single_digits:
-        wholes = 36 * i
-        for j, second in single_digits:
-            b36 = first + second
-            encoder[wholes + j] = b36
-            decoder[b36] = wholes + j
-    return encoder, decoder
+    def encode(self, n: int) -> str:
+        if n < 0:
+            raise ValueError("Encoder doesn't support negative numbers")
+
+        result = ""
+        while n > 0:
+            n, r = divmod(n, len(self.charset))
+            result = self.charset[r] + result
+
+        return result
+
+    def decode(self, encodedData: str) -> int:
+        return int(encodedData, len(self.charset))
 
 
-ENCODER, DECODER = generate_base36()
+Base36Codec = BaseNCodec("0123456789abcdefghijklmnopqrstuvwxyz")
 
 
 def show_error(message):
@@ -111,7 +112,7 @@ def data_to_svg(data):
     for base36_line in data.split():
         pairs = SPLITTER_P.findall(base36_line)
         for i, pos in enumerate(pairs):
-            pairs[i] = f"{DECODER[pos[0:2]]} {DECODER[pos[2:4]]}"
+            pairs[i] = f"{Base36Codec.decode(pos[0:2])} {Base36Codec.decode(pos[2:4])}"
         svg += f"""<path fill="none"
         stroke="#000000"
         stroke-width="3"
@@ -324,8 +325,8 @@ def svg_to_data(svg):
                     continue
                 if not previous_point:
                     flattened_line += [
-                        ENCODER[point[0]],
-                        ENCODER[point[1]],
+                        Base36Codec.encode(point[0]),
+                        Base36Codec.encode(point[1]),
                     ]
                 else:
                     if (  # throw out unnecessary points
@@ -333,8 +334,8 @@ def svg_to_data(svg):
                         or abs(previous_point[1] - point[1]) >= MERGE_DISTANCE
                     ):
                         flattened_line += [
-                            ENCODER[point[0]],
-                            ENCODER[point[1]],
+                            Base36Codec.encode(point[0]),
+                            Base36Codec.encode(point[1]),
                         ]
                 previous_point = point
             lines.append("".join(flattened_line))
@@ -374,14 +375,23 @@ def optimize(data):
         new_line = points[0]  # pre-adding
         while start + 1 < points_len:
             point_0_str = points[start]
-            point_0 = (DECODER[point_0_str[0:2]], DECODER[point_0_str[2:4]])
+            point_0 = (
+                Base36Codec.decode(point_0_str[0:2]),
+                Base36Codec.decode(point_0_str[2:4]),
+            )
 
             while end < points_len:
                 point_1_str = points[end - 1]
-                point_1 = (DECODER[point_1_str[0:2]], DECODER[point_1_str[2:4]])
+                point_1 = (
+                    Base36Codec.decode(point_1_str[0:2]),
+                    Base36Codec.decode(point_1_str[2:4]),
+                )
 
                 point_2_str = points[end]
-                point_2 = (DECODER[point_2_str[0:2]], DECODER[point_2_str[2:4]])
+                point_2 = (
+                    Base36Codec.decode(point_2_str[0:2]),
+                    Base36Codec.decode(point_2_str[2:4]),
+                )
 
                 ddeg = degrees(
                     abs(
