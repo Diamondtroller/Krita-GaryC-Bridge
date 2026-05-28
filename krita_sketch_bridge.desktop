@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Service
+ServiceTypes=Krita/PythonPlugin
+X-KDE-Library=krita_sketch_bridge
+X-Python-2-Compatible=false
+X-Krita-Manual=Manual.html
+Name=Krita Sketch Bridge
+Comment=A Krita plugin to make sketch-compatible drawings.

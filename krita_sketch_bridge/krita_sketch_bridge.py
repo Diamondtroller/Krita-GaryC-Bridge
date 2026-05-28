@@ -18,7 +18,7 @@ from PyQt5.QtWidgets import (
     QWidget,
 )
 
-NAME = "Krita GaryC Bridge"
+NAME = "Krita Sketch Bridge"
 VERSION = "0.1.6"
 
 
@@ -98,7 +98,7 @@ def get_document():
     if document is None:
         show_error(
             """You haven't opened any krita file to post.
-             Creating a new document according to garyc.me/sketch format."""
+             Creating a new document according to sketch format."""
         )
     return document
 
@@ -430,59 +430,9 @@ class Clipboard:
 
 
 ESCAPED_NAME = NAME.replace(" ", "-")
-request = Request(
-    "https://garyc.me/sketch/swap.php?v=32",
-    headers={
-        "Accept": "text/plain",
-        "Origin": f"https://{ESCAPED_NAME}",
-        "User-Agent": f"{ESCAPED_NAME}/{VERSION} (+https://github.com/Diamondtroller)",
-        "Sec-Fetch-Dest": "empty",
-        "Sec-Fetch-Mode": "cors",
-        "Sec-Fetch-Site": "cross-site",
-        "Host": "garyc.me",
-    },
-    method="POST",
-)
 
 
-def post_data(data):
-    """Sends HTTP POST request to https://garyc.me/sketch to post a sketch"""
-
-    data_len = len(data)
-    if data_len == 0:
-        return  # Related error already thrown in document_to_data()
-    if data_len <= 2 * 50:
-        show_error(
-            "There's no or almost none data to post. Please draw something before swapping."
-        )
-        return
-
-    request.data = data.encode("ascii")
-    with urlopen(request) as response:
-        sketch_id = response.read()
-
-    if sketch_id == b"":
-        show_error("There was an error posting sketch.")
-        return
-
-    sketch_id = int(sketch_id) - 1
-
-    def make_link(link):
-        ref = f"https://{link}/sketch/gallery.php#{sketch_id}"
-        return f'<a href="{ref}">{ref}</a>'
-
-    show_message(
-        f"""
-        <p>Your sketch has been posted! Here's the link to your sketch:</p>
-        <br>
-        {make_link('garyc.me')}
-        <br>
-        {make_link('noz.rip')}
-        """
-    )
-
-
-class KritaGarycBridge(krita.DockWidget):  # pylint: disable=too-few-public-methods
+class KritaSketchBridge(krita.DockWidget):  # pylint: disable=too-few-public-methods
     """Plugin's docker. Contains buttons so the user can use the plugin."""
 
     def __init__(self):
@@ -527,12 +477,6 @@ class KritaGarycBridge(krita.DockWidget):  # pylint: disable=too-few-public-meth
             #     "Generate optimized document",
             #     "Runs ink optimizer on document and save it into clipboard.",
             #     lambda: clipboard.write(optimize(document_to_data())),
-            # ],
-            # [
-            #     "document-save",
-            #     "Post to sketch",
-            #     "Post the document to https://garyc.me/sketch.",
-            #     lambda: post_data(document_to_data()),
             # ],
         ]
 
